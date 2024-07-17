@@ -1,0 +1,99 @@
+on:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: '0 1 * * *'  
+
+name: Checkout and Create Release Version
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get Version
+        id: get_version
+        run: |
+            version=$(curl -s "https://api.github.com/repos/python-pillow/Pillow/tags" | jq -r '.[0].name')
+            echo "version=${version}" >> $GITHUB_ENV
+    
+      - name: Check Release
+        run: |
+          if gh release view ${{ env.version }} -R ${{ github.repository }} | grep pillow-.*.whl; then
+            echo "Release already exists"
+            exit 1
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      
+      - name: Create Tag
+        run: |
+          git config --global user.name "${GITHUB_ACTOR}"
+          git config --global user.email "${GITHUB_ACTOR}@users.noreply.github.com"
+          git tag -a ${{ env.version }} -m "Release Version ${{ env.version }}" || echo "Tag already exists"
+          git push origin ${{ env.version }} || echo "Tag already exists"
+
+      - name: Create Release
+        run: |
+          gh release create ${{ env.version }} --notes "Release ${{ env.version }}" || echo "Release already exists"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build:
+    needs: check
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        platform: [manylinux]
+        arch: [x86_64, aarch64, ppc64le, s390x]
+        os: [ubuntu-latest]
+        pyver: [cp311, cp312]
+        manylinux: [manylinux_2_28]
+        # musllinux: [musllinux_1_1, musllinux_1_2]
+    env:
+      CIBW_BEFORE_ALL_LINUX: "curl https://sh.rustup.rs -sSf | sh -s -- --default-toolchain stable -y && yum install -y epel-release && dnf group install -y 'Development Tools' && yum install -y libtiff-devel libjpeg-devel openjpeg2-devel zlib-devel freetype-devel lcms2-devel libwebp-devel tcl-devel tk-devel harfbuzz-devel fribidi-devel libraqm-devel libimagequant-devel libxcb-devel"
+      CIBW_ENVIRONMENT: 'PATH="$PATH:$HOME/.cargo/bin"'
+    steps:
+      - name: Get Version
+        id: get_version
+        run: |
+            version=$(curl -s "https://api.github.com/repos/python-pillow/Pillow/tags" | jq -r '.[0].name')
+            echo "version=${version}" >> $GITHUB_ENV
+
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          repository: python-pillow/Pillow
+          ref: ${{ env.version }}
+          submodules: true
+
+      - name: Set up QEMU for multi-arch build
+        uses: docker/setup-qemu-action@v3
+
+      - name: Build wheels
+        uses: pypa/cibuildwheel@v2.17.0
+        env:
+          CIBW_MANYLINUX_X86_64_IMAGE: ${{matrix.manylinux}}
+          CIBW_MANYLINUX_I686_IMAGE: ${{matrix.manylinux}}
+          CIBW_MANYLINUX_PYPY_X86_64_IMAGE: ${{matrix.manylinux}}
+          CIBW_MANYLINUX_AARCH64_IMAGE: ${{matrix.manylinux}}
+          CIBW_MANYLINUX_PPC64LE_IMAGE: ${{matrix.manylinux}}
+          CIBW_MANYLINUX_S390X_IMAGE: ${{matrix.manylinux}}
+          CIBW_MANYLINUX_PYPY_AARCH64_IMAGE: ${{matrix.manylinux}}
+          CIBW_MANYLINUX_PYPY_I686_IMAGE: ${{matrix.manylinux}}
+          # CIBW_MUSLLINUX_X86_64_IMAGE: ${{matrix.musllinux}}
+          # CIBW_MUSLLINUX_I686_IMAGE: ${{matrix.musllinux}}
+          # CIBW_MUSLLINUX_AARCH64_IMAGE: ${{matrix.musllinux}}
+          # CIBW_MUSLLINUX_PPC64LE_IMAGE: ${{matrix.musllinux}}
+          # CIBW_MUSLLINUX_S390X_IMAGE: ${{matrix.musllinux}}
+          CIBW_BUILD: ${{matrix.pyver}}-${{matrix.platform}}_${{matrix.arch}}
+          CIBW_ARCHS_LINUX: auto aarch64 ppc64le s390x
+
+      - name: Upload wheels
+        run: |
+          gh release upload ${{ env.version }} wheelhouse/*.whl -R ${{ github.repository }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
